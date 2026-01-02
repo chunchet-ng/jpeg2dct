@@ -7,256 +7,259 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
-
 import os
-from setuptools import setup, Extension, find_packages
-from setuptools.command.build_ext import build_ext
-from distutils.errors import CompileError, DistutilsPlatformError, LinkError
+import re
 import sys
 import textwrap
 import traceback
 
-from jpeg2dct import __version__
+from setuptools import Extension, find_packages, setup
+from setuptools.command.build_ext import build_ext
+from setuptools.errors import (
+    CompileError,
+    LinkError,
+)
+from setuptools.errors import (
+    PlatformError as DistutilsPlatformError,
+)
 
-common_lib = Extension('jpeg2dct.common.common_lib', [])
-numpy_lib = Extension('jpeg2dct.numpy._dctfromjpg_wrapper', [])
-tf_lib = Extension('jpeg2dct.tensorflow.tf_lib', [])
+
+# Read version from __init__.py without importing (avoids circular dependency)
+def get_version():
+    init_file = os.path.join(os.path.dirname(__file__), "jpeg2dct", "__init__.py")
+    with open(init_file, "r") as f:
+        content = f.read()
+        version_match = re.search(
+            r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", content, re.M
+        )
+        if version_match:
+            return version_match.group(1)
+        raise RuntimeError("Unable to find version string in jpeg2dct/__init__.py")
 
 
-def check_tf_version():
-    try:
-        import tensorflow as tf
-        if tf.__version__ < '1.1.0':
-            raise DistutilsPlatformError(
-                'Your TensorFlow version %s is outdated.  '
-                'Horovod requires tensorflow>=1.1.0' % tf.__version__)
-    except ImportError:
-        raise DistutilsPlatformError(
-            'import tensorflow failed, is it installed?\n\n%s' % traceback.format_exc())
-    except AttributeError:
-        # This means that tf.__version__ was not exposed, which makes it *REALLY* old.
-        raise DistutilsPlatformError(
-            'Your TensorFlow version is outdated.  Horovod requires tensorflow>=1.1.0')
+__version__ = get_version()
+
+common_lib = Extension("jpeg2dct.common.common_lib", [])
+numpy_lib = Extension("jpeg2dct.numpy._dctfromjpg_wrapper", [])
 
 
 def get_cpp_flags(build_ext):
     last_err = None
-    default_flags = ['-std=c++11', '-fPIC', '-O2']
-    if sys.platform == 'darwin':
-        # Darwin most likely will have Clang, which has libc++.
-        flags_to_try = [default_flags + ['-stdlib=libc++'], default_flags]
+
+    # Windows (MSVC) uses different compiler flags
+    if sys.platform == "win32":
+        # MSVC compiler flags
+        flags_to_try = [
+            ["/std:c++14", "/O2"],  # Try C++14 first (better support)
+            ["/std:c++11", "/O2"],  # Fallback to C++11
+        ]
+    elif sys.platform == "darwin":
+        # macOS: Clang with libc++
+        default_flags = ["-std=c++11", "-fPIC", "-O2"]
+        flags_to_try = [default_flags + ["-stdlib=libc++"], default_flags]
     else:
-        flags_to_try = [default_flags, default_flags + ['-stdlib=libc++']]
+        # Linux: GCC/Clang
+        default_flags = ["-std=c++11", "-fPIC", "-O2"]
+        flags_to_try = [default_flags, default_flags + ["-stdlib=libc++"]]
+
     for cpp_flags in flags_to_try:
         try:
-            test_compile(build_ext, 'test_cpp_flags', extra_preargs=cpp_flags,
-                         code=textwrap.dedent('''\
+            test_compile(
+                build_ext,
+                "test_cpp_flags",
+                extra_preargs=cpp_flags,
+                code=textwrap.dedent("""\
                     #include <unordered_map>
                     void test() {
                     }
-                    '''))
+                    """),
+            )
 
             return cpp_flags
         except (CompileError, LinkError):
-            last_err = 'Unable to determine C++ compilation flags (see error above).'
+            last_err = "Unable to determine C++ compilation flags (see error above)."
         except Exception:
-            last_err = 'Unable to determine C++ compilation flags.  ' \
-                       'Last error:\n\n%s' % traceback.format_exc()
+            last_err = (
+                "Unable to determine C++ compilation flags.  "
+                "Last error:\n\n%s" % traceback.format_exc()
+            )
 
     raise DistutilsPlatformError(last_err)
 
 
-def get_tf_include_dirs():
-    import tensorflow as tf
-    tf_inc = tf.sysconfig.get_include()
-    return [tf_inc, '%s/external/nsync/public' % tf_inc]
-
-
-def get_tf_lib_dirs():
-    import tensorflow as tf
-    tf_lib = tf.sysconfig.get_lib()
-    return [tf_lib]
-
-
-def get_tf_libs(build_ext, lib_dirs, cpp_flags):
-    last_err = None
-    for tf_libs in [['tensorflow_framework'], []]:
-        try:
-            lib_file = test_compile(build_ext, 'test_tensorflow_libs',
-                                    library_dirs=lib_dirs, libraries=tf_libs,
-                                    extra_preargs=cpp_flags,
-                                    code=textwrap.dedent('''\
-                    void test() {
-                    }
-                    '''))
-
-            from tensorflow.python.framework import load_library
-            load_library.load_op_library(lib_file)
-
-            return tf_libs
-        except (CompileError, LinkError):
-            last_err = 'Unable to determine -l link flags to use with TensorFlow (see error above).'
-        except Exception:
-            last_err = 'Unable to determine -l link flags to use with TensorFlow.  ' \
-                       'Last error:\n\n%s' % traceback.format_exc()
-
-    raise DistutilsPlatformError(last_err)
-
-
-def get_tf_abi(build_ext, include_dirs, lib_dirs, libs, cpp_flags):
-    last_err = None
-    cxx11_abi_macro = '_GLIBCXX_USE_CXX11_ABI'
-    for cxx11_abi in ['0', '1']:
-        try:
-            lib_file = test_compile(build_ext, 'test_tensorflow_abi',
-                                    macros=[(cxx11_abi_macro, cxx11_abi)],
-                                    include_dirs=include_dirs, library_dirs=lib_dirs,
-                                    libraries=libs, extra_preargs=cpp_flags,
-                                    code=textwrap.dedent('''\
-                #include <string>
-                #include "tensorflow/core/framework/op.h"
-                #include "tensorflow/core/framework/op_kernel.h"
-                #include "tensorflow/core/framework/shape_inference.h"
-                void test() {
-                    auto ignore = tensorflow::strings::StrCat("a", "b");
-                }
-                '''))
-
-            from tensorflow.python.framework import load_library
-            load_library.load_op_library(lib_file)
-
-            return cxx11_abi_macro, cxx11_abi
-        except (CompileError, LinkError):
-            last_err = 'Unable to determine CXX11 ABI to use with TensorFlow (see error above).'
-        except Exception:
-            last_err = 'Unable to determine CXX11 ABI to use with TensorFlow.  ' \
-                       'Last error:\n\n%s' % traceback.format_exc()
-
-    raise DistutilsPlatformError(last_err)
-
-
-def get_tf_flags(build_ext, cpp_flags):
-    import tensorflow as tf
-    try:
-        return tf.sysconfig.get_compile_flags(), tf.sysconfig.get_link_flags()
-    except AttributeError:
-        # fallback to the previous logic
-        tf_include_dirs = get_tf_include_dirs()
-        tf_lib_dirs = get_tf_lib_dirs()
-        tf_libs = get_tf_libs(build_ext, tf_lib_dirs, cpp_flags)
-        tf_abi = get_tf_abi(build_ext, tf_include_dirs,
-                            tf_lib_dirs, tf_libs, cpp_flags)
-
-        compile_flags = []
-        for include_dir in tf_include_dirs:
-            compile_flags.append('-I%s' % include_dir)
-        if tf_abi:
-            compile_flags.append('-D%s=%s' % tf_abi)
-
-        link_flags = []
-        for lib_dir in tf_lib_dirs:
-            link_flags.append('-L%s' % lib_dir)
-        for lib in tf_libs:
-            link_flags.append('-l%s' % lib)
-
-        return compile_flags, link_flags
-
-
-def test_compile(build_ext, name, code, libraries=None, include_dirs=None, library_dirs=None, macros=None,
-                 extra_preargs=None):
-    test_compile_dir = os.path.join(build_ext.build_temp, 'test_compile')
+def test_compile(
+    build_ext,
+    name,
+    code,
+    libraries=None,
+    include_dirs=None,
+    library_dirs=None,
+    macros=None,
+    extra_preargs=None,
+):
+    test_compile_dir = os.path.join(build_ext.build_temp, "test_compile")
     if not os.path.exists(test_compile_dir):
         os.makedirs(test_compile_dir)
 
-    source_file = os.path.join(test_compile_dir, '%s.cc' % name)
-    with open(source_file, 'w') as f:
+    source_file = os.path.join(test_compile_dir, "%s.cc" % name)
+    with open(source_file, "w") as f:
         f.write(code)
 
     compiler = build_ext.compiler
     [object_file] = compiler.object_filenames([source_file])
     shared_object_file = compiler.shared_object_filename(
-        name, output_dir=test_compile_dir)
+        name, output_dir=test_compile_dir
+    )
 
-    compiler.compile([source_file], extra_preargs=extra_preargs,
-                     include_dirs=include_dirs, macros=macros)
+    compiler.compile(
+        [source_file],
+        extra_preargs=extra_preargs,
+        include_dirs=include_dirs,
+        macros=macros,
+    )
     compiler.link_shared_object(
-        [object_file], shared_object_file, libraries=libraries, library_dirs=library_dirs)
+        [object_file],
+        shared_object_file,
+        libraries=libraries,
+        library_dirs=library_dirs,
+    )
 
     return shared_object_file
 
 
 def get_conda_include_dir():
-    prefix = os.environ.get('CONDA_PREFIX', '.')
-    return [os.path.join(prefix,'include')]
+    prefix = os.environ.get("CONDA_PREFIX", ".")
+    return [os.path.join(prefix, "include")]
+
+
+def get_system_jpeg_paths():
+    """Get libjpeg include and library paths for the current platform."""
+    include_dirs = []
+    library_dirs = []
+
+    if sys.platform == "darwin":
+        # macOS: Check Homebrew prefixes (Apple Silicon and Intel)
+        brew_prefixes = ["/opt/homebrew", "/usr/local"]
+
+        for prefix in brew_prefixes:
+            # Check for libjpeg-turbo
+            jpeg_include = os.path.join(prefix, "opt", "jpeg-turbo", "include")
+            jpeg_lib = os.path.join(prefix, "opt", "jpeg-turbo", "lib")
+
+            if os.path.exists(jpeg_include):
+                include_dirs.append(jpeg_include)
+            if os.path.exists(jpeg_lib):
+                library_dirs.append(jpeg_lib)
+
+            # Also check regular jpeg as fallback
+            jpeg_include_alt = os.path.join(prefix, "opt", "jpeg", "include")
+            jpeg_lib_alt = os.path.join(prefix, "opt", "jpeg", "lib")
+
+            if (
+                os.path.exists(jpeg_include_alt)
+                and jpeg_include_alt not in include_dirs
+            ):
+                include_dirs.append(jpeg_include_alt)
+            if os.path.exists(jpeg_lib_alt) and jpeg_lib_alt not in library_dirs:
+                library_dirs.append(jpeg_lib_alt)
+
+    elif sys.platform.startswith("linux"):
+        # Linux: Check common system paths
+        common_paths = [
+            "/usr/include",
+            "/usr/local/include",
+            "/usr/include/x86_64-linux-gnu",
+            "/usr/include/aarch64-linux-gnu",
+        ]
+        common_lib_paths = [
+            "/usr/lib",
+            "/usr/local/lib",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/aarch64-linux-gnu",
+        ]
+
+        for path in common_paths:
+            if os.path.exists(path):
+                include_dirs.append(path)
+
+        for path in common_lib_paths:
+            if os.path.exists(path):
+                library_dirs.append(path)
+
+    elif sys.platform == "win32":
+        # Windows: Check common installation paths
+        # vcpkg default path
+        vcpkg_root = os.environ.get("VCPKG_ROOT")
+        if vcpkg_root:
+            vcpkg_include = os.path.join(
+                vcpkg_root, "installed", "x64-windows", "include"
+            )
+            vcpkg_lib = os.path.join(vcpkg_root, "installed", "x64-windows", "lib")
+            if os.path.exists(vcpkg_include):
+                include_dirs.append(vcpkg_include)
+            if os.path.exists(vcpkg_lib):
+                library_dirs.append(vcpkg_lib)
+
+    return include_dirs, library_dirs
 
 
 def get_common_options(build_ext):
     cpp_flags = get_cpp_flags(build_ext)
 
+    system_includes, system_libs = get_system_jpeg_paths()
+
     MACROS = []
-    INCLUDES = [] + get_conda_include_dir()
+    INCLUDES = [] + get_conda_include_dir() + system_includes
     SOURCES = []
     COMPILE_FLAGS = cpp_flags
     LINK_FLAGS = []
-    LIBRARY_DIRS = []
+    LIBRARY_DIRS = [] + system_libs
     LIBRARIES = []
 
-    return dict(MACROS=MACROS,
-                INCLUDES=INCLUDES,
-                SOURCES=SOURCES,
-                COMPILE_FLAGS=COMPILE_FLAGS,
-                LINK_FLAGS=LINK_FLAGS,
-                LIBRARY_DIRS=LIBRARY_DIRS,
-                LIBRARIES=LIBRARIES)
+    return dict(
+        MACROS=MACROS,
+        INCLUDES=INCLUDES,
+        SOURCES=SOURCES,
+        COMPILE_FLAGS=COMPILE_FLAGS,
+        LINK_FLAGS=LINK_FLAGS,
+        LIBRARY_DIRS=LIBRARY_DIRS,
+        LIBRARIES=LIBRARIES,
+    )
 
 
 def build_common_extension(build_ext, options, abi_compile_flags):
-    common_lib.define_macros = options['MACROS']
-    common_lib.include_dirs = options['INCLUDES']
-    common_lib.sources = options['SOURCES'] + ['jpeg2dct/common/dctfromjpg.cc']
-    common_lib.extra_compile_args = options['COMPILE_FLAGS'] + \
-                                   abi_compile_flags
-    common_lib.extra_link_args = options['LINK_FLAGS']
-    common_lib.library_dirs = options['LIBRARY_DIRS']
-    common_lib.libraries = options['LIBRARIES'] + ['jpeg']
+    common_lib.define_macros = options["MACROS"]
+    common_lib.include_dirs = options["INCLUDES"]
+    common_lib.sources = options["SOURCES"] + ["jpeg2dct/common/dctfromjpg.cc"]
+    common_lib.extra_compile_args = options["COMPILE_FLAGS"] + abi_compile_flags
+    common_lib.extra_link_args = options["LINK_FLAGS"]
+    common_lib.library_dirs = options["LIBRARY_DIRS"]
+    common_lib.libraries = options["LIBRARIES"] + ["jpeg"]
+    # Set runtime library paths for Linux (helps find libjpeg.so at runtime)
+    if sys.platform.startswith("linux"):
+        common_lib.runtime_library_dirs = options["LIBRARY_DIRS"]
 
     build_ext.build_extension(common_lib)
 
 
 def build_numpy_extension(build_ext, options, abi_compile_flags):
     import numpy
-    numpy_lib.define_macros = options['MACROS']
-    numpy_lib.include_dirs = options['INCLUDES'] + [numpy.get_include()]
-    numpy_lib.sources = options['SOURCES'] + ['jpeg2dct/numpy/dctfromjpg_wrap.cc']
-    numpy_lib.extra_compile_args = options['COMPILE_FLAGS'] + \
-                                   abi_compile_flags
-    numpy_lib.extra_link_args = options['LINK_FLAGS']
-    numpy_lib.library_dirs = options['LIBRARY_DIRS']
-    numpy_lib.libraries = options['LIBRARIES']
+
+    numpy_lib.define_macros = options["MACROS"]
+    numpy_lib.include_dirs = options["INCLUDES"] + [numpy.get_include()]
+    numpy_lib.sources = options["SOURCES"] + [
+        "jpeg2dct/numpy/dctfromjpg_wrap.cc",
+        "jpeg2dct/common/dctfromjpg.cc",
+    ]
+    numpy_lib.extra_compile_args = options["COMPILE_FLAGS"] + abi_compile_flags
+    numpy_lib.extra_link_args = options["LINK_FLAGS"]
+    numpy_lib.library_dirs = options["LIBRARY_DIRS"]
+    numpy_lib.libraries = options["LIBRARIES"] + ["jpeg"]
+    # Set runtime library paths for Linux (helps find libjpeg.so at runtime)
+    if sys.platform.startswith("linux"):
+        numpy_lib.runtime_library_dirs = options["LIBRARY_DIRS"]
 
     build_ext.build_extension(numpy_lib)
-
-
-def build_tf_extension(build_ext, options):
-    check_tf_version()
-    tf_compile_flags, tf_link_flags = get_tf_flags(
-        build_ext, options['COMPILE_FLAGS'])
-
-    tf_lib.define_macros = options['MACROS']
-    tf_lib.include_dirs = options['INCLUDES']
-    tf_lib.sources = options['SOURCES'] + ['jpeg2dct/tensorflow/tf_lib.cc']
-    tf_lib.extra_compile_args = options['COMPILE_FLAGS'] + \
-        tf_compile_flags
-    tf_lib.extra_link_args = options['LINK_FLAGS'] + tf_link_flags
-    tf_lib.library_dirs = options['LIBRARY_DIRS']
-    tf_lib.libraries = options['LIBRARIES']
-
-    build_ext.build_extension(tf_lib)
-
-    # Return ABI flags used for TensorFlow compilation.  We will use this flag
-    # to compile all the libraries.
-    return [flag for flag in tf_compile_flags if '_GLIBCXX_USE_CXX11_ABI' in flag]
 
 
 # run the customize_compiler
@@ -264,36 +267,55 @@ class custom_build_ext(build_ext):
     def build_extensions(self):
         options = get_common_options(self)
         abi_compile_flags = []
-        built_plugins = []
-        if not os.environ.get('JPEG2DCT_WITHOUT_TENSORFLOW'):
-            try:
-                abi_compile_flags = build_tf_extension(self, options)
-                built_plugins.append(True)
-            except:
-                if not os.environ.get('JPEG2DCT_WITH_TENSORFLOW'):
-                    print('INFO: Unable to build TensorFlow plugin, will skip it.\n\n'
-                          '%s' % traceback.format_exc(), file=sys.stderr)
-                    built_plugins.append(False)
-                else:
-                    raise
-        build_common_extension(self, options, abi_compile_flags)
+        # On Windows, skip common_lib (causes linking issues,
+        # not needed since code is in numpy_lib)
+        if sys.platform != "win32":
+            build_common_extension(self, options, abi_compile_flags)
         build_numpy_extension(self, options, abi_compile_flags)
 
 
-setup(name='jpeg2dct',
-      version=__version__,
-      packages=find_packages(),
-      description=textwrap.dedent('''\
-          Library providing a Python function and a TensorFlow Op to read JPEG image as a numpy 
-          array or a Tensor containing DCT coefficients.'''),
-      author='Uber Technologies, Inc.',
-      long_description=textwrap.dedent('''\
-          jpeg2dct library provides native Python function and a TensorFlow Op to read JPEG image
-          as a numpy array or a Tensor containing DCT coefficients.'''),
-      url='https://github.com/uber-research/jpeg2dct',
-      ext_modules=[common_lib, numpy_lib, tf_lib],
-      cmdclass={'build_ext': custom_build_ext},
-      setup_requires=['numpy'],
-      install_requires=['numpy'],
-      tests_require=['pytest'],
-      zip_safe=False)
+# Build extensions list based on platform
+# On Windows, only build numpy_lib (common_lib causes linking issues)
+ext_modules = [numpy_lib] if sys.platform == "win32" else [common_lib, numpy_lib]
+
+setup(
+    name="jpeg2dct-numpy",
+    version=__version__,
+    packages=find_packages(),
+    description=textwrap.dedent("""\
+          Library providing a Python function to read JPEG image as a numpy
+          array."""),
+    author="Uber Technologies, Inc.",
+    author_email="",
+    maintainer="Chun Chet Ng",
+    long_description=textwrap.dedent("""\
+          jpeg2dct library provides native Python function to read JPEG image
+          as a numpy array.
+
+          This is a community-maintained fork with Python 3.10-3.14 support,
+          macOS Apple Silicon compatibility, and libjpeg-turbo integration."""),
+    long_description_content_type="text/plain",
+    url="https://github.com/chunchet-ng/jpeg2dct",
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": custom_build_ext},
+    setup_requires=["numpy"],
+    install_requires=["numpy"],
+    tests_require=["pytest"],
+    python_requires=">=3.10",
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
+        "License :: Other/Proprietary License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: C++",
+        "Topic :: Scientific/Engineering :: Image Processing",
+    ],
+    keywords="jpeg dct image-processing numpy",
+    zip_safe=False,
+)

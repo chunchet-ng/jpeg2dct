@@ -1,4 +1,5 @@
 *.pyc
+__pycache__/
 jpeg2dct.egg-info
 dist
 build
@@ -7,3 +8,15 @@ build
 .eggs/
 .pytest_cache/
 *.so
+*.o
+
+# IDE
+.vscode/
+.claude/
+
+# macOS
+.DS_Store
+
+# Distribution
+*.egg-info/
+*.egg

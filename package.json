@@ -1,0 +1,40 @@
+{
+    "name": "jpeg2dct-numpy",
+    "private": true,
+    "devDependencies": {
+        "semantic-release": "^24.2.0",
+        "@semantic-release/changelog": "^6.0.3",
+        "@semantic-release/commit-analyzer": "^13.0.0",
+        "@semantic-release/exec": "^6.0.3",
+        "@semantic-release/git": "^10.0.1",
+        "@semantic-release/github": "^11.0.1",
+        "@semantic-release/release-notes-generator": "^14.0.1"
+    },
+    "release": {
+        "branches": ["master"],
+        "plugins": [
+            "@semantic-release/commit-analyzer",
+            "@semantic-release/release-notes-generator",
+            [
+                "@semantic-release/changelog",
+                {
+                    "changelogFile": "CHANGELOG.md"
+                }
+            ],
+            [
+                "@semantic-release/exec",
+                {
+                    "prepareCmd": "sed -i.bak 's/__version__ = \".*\"/__version__ = \"${nextRelease.version}\"/' jpeg2dct/__init__.py && rm jpeg2dct/__init__.py.bak"
+                }
+            ],
+            [
+                "@semantic-release/git",
+                {
+                    "assets": ["CHANGELOG.md", "jpeg2dct/__init__.py"],
+                    "message": "chore(release): package release - ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+                }
+            ],
+            "@semantic-release/github"
+        ]
+    }
+}

@@ -1,0 +1,97 @@
+name: CI - Build and Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os-name }} with Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: ubuntu-latest
+            os-name: Linux
+          - os: macos-latest
+            os-name: macOS
+          - os: windows-latest
+            os-name: Windows
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os-name }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install system dependencies (Linux) - libjpeg-turbo via apt
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libjpeg-turbo8-dev
+
+    - name: Install system dependencies (macOS) - libjpeg-turbo via Homebrew
+      if: runner.os == 'macOS'
+      run: |
+        brew install jpeg-turbo
+
+    - name: Install system dependencies (Windows) - libjpeg-turbo via vcpkg
+      if: runner.os == 'Windows'
+      run: |
+        # Use vcpkg (pre-installed on GitHub Actions Windows runners)
+        vcpkg install libjpeg-turbo:x64-windows
+        echo "VCPKG_ROOT=C:/vcpkg" >> $GITHUB_ENV
+        echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $GITHUB_ENV
+        # Add vcpkg bin directory to PATH so DLLs can be found at runtime
+        echo "C:/vcpkg/installed/x64-windows/bin" >> $GITHUB_PATH
+      shell: bash
+
+    - name: Verify vcpkg installation and paths (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        echo "Checking vcpkg installation..."
+        ls "C:/vcpkg/installed/x64-windows/bin/" || echo "Bin directory not found"
+        ls "C:/vcpkg/installed/x64-windows/lib/" || echo "Lib directory not found"
+        ls "C:/vcpkg/installed/x64-windows/include/" || echo "Include directory not found"
+        echo "Current PATH:"
+        echo $PATH
+      shell: bash
+
+    - name: Install Python dependencies (pip, pytest, numpy)
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest numpy
+
+    - name: Build and install jpeg2dct-numpy from source
+      run: |
+        pip install -e .
+      env:
+        VCPKG_ROOT: C:/vcpkg
+
+    - name: Copy runtime DLLs to package directory (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        # List all DLLs installed by vcpkg
+        echo "Available DLLs:"
+        ls -la C:/vcpkg/installed/x64-windows/bin/ | grep -E '\.(dll|DLL)$' || echo "No DLLs found"
+        # Copy all jpeg-related DLLs to the package directory
+        cp C:/vcpkg/installed/x64-windows/bin/*.dll jpeg2dct/numpy/ 2>/dev/null || echo "Could not copy DLLs"
+        echo "DLLs in package directory:"
+        ls -la jpeg2dct/numpy/*.dll 2>/dev/null || echo "No DLLs in package"
+      shell: bash
+
+    - name: Run test suite with pytest
+      run: |
+        pytest -v
+
+    - name: Verify package can be imported
+      run: |
+        python -c "from jpeg2dct.numpy import load, loads; print('Successfully imported jpeg2dct-numpy on ${{ matrix.os-name }} with Python ${{ matrix.python-version }}')"

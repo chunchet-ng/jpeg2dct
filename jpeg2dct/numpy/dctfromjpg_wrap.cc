@@ -5102,4 +5102,3 @@ SWIG_init(void) {
   return;
 #endif
 }
-

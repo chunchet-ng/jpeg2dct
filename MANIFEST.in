@@ -1,1 +1,16 @@
-recursive-include * *.h *.cc *.md
+include README.md
+include LICENSE
+include pyproject.toml
+include setup.py
+
+# Include test data
+recursive-include test/data *.jpg *.txt
+
+# Include C++ source and headers
+recursive-include jpeg2dct *.h *.cc *.i
+
+# Exclude compiled files
+global-exclude *.pyc
+global-exclude *.so
+global-exclude *.o
+global-exclude __pycache__

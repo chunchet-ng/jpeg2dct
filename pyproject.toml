@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "numpy>=1.14.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jpeg2dct-numpy"
+authors = [{name = "Uber Technologies, Inc."}]
+maintainers = [{name = "Chun Chet Ng"}]
+description = "Library providing a Python function to read JPEG image as a numpy array"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["jpeg", "dct", "image-processing", "numpy"]
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=1.14.0",
+]
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "jpeg2dct.__version__"}
+
+[project.urls]
+Homepage = "https://github.com/chunchet-ng/jpeg2dct"
+Repository = "https://github.com/chunchet-ng/jpeg2dct"
+"Original Repository" = "https://github.com/uber-research/jpeg2dct"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Linting configuration
+[tool.ruff]
+exclude = [
+    "jpeg2dct/numpy/dctfromjpg_wrapper.py",  # SWIG-generated file (do not edit!)
+    "build/",
+    "dist/",
+    ".eggs/",
+    "__pycache__/",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E402",  # Module level import not at top (needed in setup.py)
+    "E731",  # Lambda assignment (in SWIG files)
+    "F811",  # Redefinition (in SWIG files)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Setup.py gets special treatment (it's a build script, not application code)
+"setup.py" = ["E402", "F401", "F403"]
+# SWIG-generated files: ignore everything
+"jpeg2dct/numpy/dctfromjpg_wrapper.py" = ["ALL"]
